@@ -1,0 +1,82 @@
+#!/bin/bash
+# A script to make interrogating IMDSv2  as simple as IMDSv1
+# Call this script as if it is curl, giving it a IMDS url or path.
+# e.g.
+# IMDSCurl http://169.254.169.254/latest/meta-data/instance-id
+# IMDSCurl latest/meta-data/instance-id
+
+
+# define and export VERBOSE in the caller to get more details on what is going on
+
+die() {
+  echo "$1" >&2
+  exit 1
+}
+
+
+info() {
+  if [ $VERBOSE ]; then
+    echo "$1" >&2
+  fi
+}
+
+
+IMDS_HOST="http://169.254.169.254"
+
+
+
+# Function to retrieve a new token from IMDSv2
+get_token() {
+  # Determine a user-writable token file path
+  USER_ID=$(id -u)
+  local RUNTIME_DATA_DIRECTORY="/run/user/${USER_ID}"
+  local TOKEN_FILE="${RUNTIME_DATA_DIRECTORY}/imds_token"
+  # Ensure the token file directory exists
+  mkdir -p "${RUNTIME_DATA_DIRECTORY}" && chmod 700 "${RUNTIME_DATA_DIRECTORY}" || die "cannot create runtime data directory ${RUNTIME_DATA_DIRECTORY}"
+
+  local TTL_SECONDS=21600  # 6 hours
+  local STALE_SECONDS=$((TTL_SECONDS - 60))
+
+  if [[ ! -f "$TOKEN_FILE" ]] || [[ $(($(date +%s) - $(stat -c %Y "$TOKEN_FILE"))) -gt $STALE_SECONDS ]]; then
+    info "Fetching a new IMDSv2 token..."
+    TOKEN=$(curl -s -X PUT "$IMDS_HOST/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: $TTL_SECONDS")
+    
+    if [[ -z "$TOKEN" ]]; then
+      die  "Error: Failed to retrieve IMDSv2 token."
+    fi
+
+    echo "$TOKEN" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+  else
+    TOKEN=$(cat "$TOKEN_FILE")
+  fi
+}
+
+# Function to fetch metadata using the token
+fetch_metadata() {
+  local url_path="$1"
+  
+  # Allow full URL or path specification only if it matches IMDS_HOST
+  # (prevent using this command to exfiltrate the TOKEN to other web servers)
+  if [[ "$url_path" == ${IMDS_HOST}/* ]]; then
+    URL="$url_path"
+  else
+    URL="$IMDS_HOST/$url_path"
+  fi
+
+  # Fetch the metadata
+  curl -s -H "X-aws-ec2-metadata-token: $TOKEN" "$URL"
+}
+
+# Main function to handle arguments and orchestrate the token retrieval and metadata fetching
+main() {
+  if [[ -z "$1" ]]; then
+    die "Usage: $0 <metadata-path|full-url>"
+  fi
+
+  get_token
+  fetch_metadata "$1"
+}
+
+# Run the main function with all arguments
+main "$@"
