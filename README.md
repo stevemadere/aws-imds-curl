@@ -25,7 +25,7 @@ AWS introduced IMDSv2 to enhance security by requiring a session-oriented approa
 ### Installation
 
    ```bash
-   sudo curl -o /usr/local/bin/IMDSCurl -L https://github.com/stevemadere/aws-utils/blob/latest/IMDSCurl && sudo chmod 755 /usr/local/bin/IMDSCurl
+   sudo curl -o /usr/local/bin/IMDSCurl -L https://raw.githubusercontent.com/stevemadere/aws-utils/latest/IMDSCurl && sudo chmod 755 /usr/local/bin/IMDSCurl
    ```
 ### Example usage
 
@@ -50,7 +50,7 @@ MY_INSTANCE_ID=$(IMDSCurl http://169.254.169.254/latest/meta-data/instance-id)
 ### Installation
 
    ```bash
-   sudo curl -o /usr/local/bin/associate_this_elastic_ip_address_with_me -L https://github.com/stevemadere/aws-utils/blob/latest/associate_this_elastic_ip_address_with_me && sudo chmod 755 /usr/local/bin/associate_this_elastic_ip_address_with_me
+   sudo curl -o /usr/local/bin/associate_this_elastic_ip_address_with_me -L https://raw.githubusercontent.com/stevemadere/aws-utils/latest/associate_this_elastic_ip_address_with_me && sudo chmod 755 /usr/local/bin/associate_this_elastic_ip_address_with_me
    ```
 
 
