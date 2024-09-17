@@ -1,0 +1,20 @@
+#!/bin/bash
+
+HOST_OR_IP_ADDRESS="${1}"
+
+# if it looks like an ip address, is it as is, otherwise use host to look it up
+if [[ $HOST_OR_IP_ADDRESS =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+  MY_ELASTIC_IP=$HOST_OR_IP_ADDRESS
+else
+  MY_ELASTIC_IP=$(host $HOST_OR_IP_ADDRESS | grep "has address" | awk '{ print $4 }')
+fi
+
+
+# Fetch the instance ID and region from instance metadata
+MY_INSTANCE_ID=$(IMDSCurl latest/meta-data/instance-id)
+MY_REGION=$(IMDSCurl latest/dynamic/instance-identity/document | jq -r .region)
+
+# Attach the Elastic IP to myself
+cmd="aws ec2 associate-address --instance-id $MY_INSTANCE_ID --public-ip $MY_ELASTIC_IP --region $MY_REGION"
+echo $cmd
+$cmd

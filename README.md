@@ -1,8 +1,12 @@
-# IMDSCurl
+# aws-utils
 
-`IMDSCurl` is a bash-based utility designed to interact with the EC2 Instance Metadata Service Version 2 (IMDSv2) in AWS environments. The tool simplifies metadata retrieval by managing IMDSv2 tokens automatically, caching them securely, and allowing users to query instance metadata using a straightforward command-line interface. The tool behaves similarly to `curl` for querying metadata but adds the convenience of handling IMDSv2's token requirements.
+### Bash scripts to ease self-managagement for instances on EC2
 
-## Why This Script Exists
+## IMDSCurl
+
+`IMDSCurl` interacts with the EC2 Instance Metadata Service Version 2 (IMDSv2) in AWS environments. It simplifies metadata retrieval by managing IMDSv2 tokens automatically, caching them securely, and allowing users to query instance metadata as simply as they used to be able to with curl and IMDSv1.
+
+### Why This Script Exists
 
 AWS introduced IMDSv2 to enhance security by requiring a session-oriented approach to accessing instance metadata. This means that every request to the Instance Metadata Service must include a valid session token, which needs to be periodically refreshed. While this improves security, it also complicates scripting and automation that need to interact with the IMDS. 
 
@@ -11,13 +15,42 @@ AWS introduced IMDSv2 to enhance security by requiring a session-oriented approa
 - **Simplify IMDSv2 Interaction**: Automatically manage the generation, caching, and refreshing of IMDSv2 tokens.
 - **Provide a `curl`-like Interface**: Allow users to query metadata with minimal changes to their existing workflows.
 
-## Installation
+### Prerequisites
 
-You can easily install `IMDSCurl` directly from the GitHub repository using `curl`. Follow the instructions below:
+- curl
+- host command
+- instance IAM Role must have permissions to attach the elastic ip address in question
+- IMDSCurl (see above)
 
-1. **Download the Script**:
-   Use `curl` to download the latest version of the script and save it to a location in your system's `$PATH`, such as `/usr/local/bin`.
+### Installation
 
    ```bash
-   sudo curl -o /usr/local/bin/IMDSCurl -L https://github.com/stevemadere/aws-imds-curl/blob/latest/IMDSCurl && sudo chmod 755 /usr/local/bin/IMDSCurl
+   sudo curl -o /usr/local/bin/IMDSCurl -L https://github.com/stevemadere/aws-utils/blob/latest/IMDSCurl && sudo chmod 755 /usr/local/bin/IMDSCurl
+   ```
+### Example usage
+
+```bash
+MY_INSTANCE_ID=$(IMDSCurl latest/meta-data/instance-id)
+# or
+MY_INSTANCE_ID=$(IMDSCurl http://169.254.169.254/latest/meta-data/instance-id)
+```
+
+## associate_this_elastic_ip_address_with_me
+
+`associate_this_elastic_ip_address_with_me` is a bash script that will associate an Elastic IP address with the current instance.  The IP address can be specified numerically or via a hostname and looked up with DNS.
+
+### Prerequisites
+
+- aws-cli
+- host command
+- jq command
+- IMDSCurl command (see above)
+- instance IAM Role must have permissions to attach the elastic ip address in question
+
+### Installation
+
+   ```bash
+   sudo curl -o /usr/local/bin/associate_this_elastic_ip_address_with_me -L https://github.com/stevemadere/aws-utils/blob/latest/associate_this_elastic_ip_address_with_me && sudo chmod 755 /usr/local/bin/associate_this_elastic_ip_address_with_me
+   ```
+
 
