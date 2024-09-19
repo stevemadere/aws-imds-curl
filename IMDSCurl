@@ -75,7 +75,7 @@ main() {
   fi
 
   get_token
-  fetch_metadata "$1"
+  fetch_metadata "$1" || die "cannot fetch metadata $1"
 }
 
 # Run the main function with all arguments
