@@ -18,9 +18,6 @@ AWS introduced IMDSv2 to enhance security by requiring a session-oriented approa
 ### Prerequisites
 
 - curl
-- host command
-- instance IAM Role must have permissions to attach the elastic ip address in question
-- IMDSCurl (see above)
 
 ### Installation
 
