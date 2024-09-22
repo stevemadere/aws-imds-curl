@@ -67,7 +67,7 @@ resolve_hostname() {
   host_output=$(host $1)
   [ $? -ne 0 ] && return 1
   local ip_address
-  ip_address=$(echo "$host_output" | awk '/has address/ { print $NF }')
+  ip_address=$(echo "$host_output" | awk '/has address/ { print $NF }' | head -1)
   if  matches_ip_address $ip_address; then
     echo $ip_address
   else
@@ -149,7 +149,7 @@ ensure_volume_attached() {
 }
 
 associate_this_elastic_ip_address_with_me() {
-  if [ $# -ne 1  ] || [[ $1 =~ ^- ]] ; then
+  if [ "$#" -ne 1  ] || [[ "$1" =~ ^- ]] ; then
     die "Usage: $0 <host_or_ip_address>"
   fi
 
