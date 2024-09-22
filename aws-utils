@@ -210,7 +210,7 @@ if [ $1 = 'install-commands' ] ; then
   INSTALL_DIR="$THIS_SCRIPT_DIR"
   for subcommand in $SUBCOMMANDS
   do
-    SYMLINK="$THIS_SCRIPT_PATH/$subcommand" 
+    SYMLINK="$THIS_SCRIPT_DIR/$subcommand" 
     TARGET="$THIS_SCRIPT_NAME"
     ln -s "$TARGET" "$SYMLINK" || die "could not symlink $SYMLINK to $TARGET"
   done
