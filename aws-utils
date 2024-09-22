@@ -19,7 +19,7 @@ say() {
 }
 
 usage() {
-  local joined_subcommands="$(IFS="|" ; echo "${SUBCOMMANDS[*]}")"
+  local joined_subcommands="${SUBCOMMANDS[@]// /|}"
 
   die "usage: $1 <${joined_subcommands}|install-commands> args"
 }
@@ -84,7 +84,7 @@ eva_usage() {
 
 # the following functions are exposed as subcommands
 #
-SUBCOMMANDS=("IMDSCurl attach_this_volume_to_me detach_this_volume")
+SUBCOMMANDS=("IMDSCurl associate_this_elastic_ip_address_with_me ensure_volume_attached")
 
 
 IMDSCurl() {
@@ -142,13 +142,15 @@ ensure_volume_attached() {
 
   if [ -z "$ATTACHED_DEVICE" ]; then
     # STEVE: this is where you left off
+    die "unimplemented functionality"
      ATTACH_POINT=FIXME
      aws ec2 attach-volume --volume-id "$EBS_VOL_ID" --instance-id "$MY_INSTANCE_ID" --device "$ATTACH_POINT" || die "Could not attach the volume $EBS_VOL_ID to my instance id"
 
+  fi
 }
 
 associate_this_elastic_ip_address_with_me() {
-  if [ $# -ne 1 ]; then
+  if [ $# -ne 1  ] || [[ $1 =~ ^- ]] ; then
     die "Usage: $0 <host_or_ip_address>"
   fi
 
