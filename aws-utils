@@ -1,0 +1,220 @@
+#!/bin/bash
+# utilities to ease various aws manipulation operations on an EC2 instance
+# They can be called via $(aws-utils subcommand args) or you can call $(aws-utils install-commands)
+# and from then on, any of them can be called without the aws-utils prefix.
+# export the a non-empty variable VERBOSE to get diagnostic logging
+
+# Internal functions
+die() {
+  local message="$1"
+  local exit_code="${2:-1}"  # Default exit code is 1 if not provided.
+  echo "Error!:  $message" >&2  # Print message to stderr.
+  exit "$exit_code"  # Exit with the provided exit code.
+}
+
+say() {
+  if [ -n "$VERBOSE" ]; then
+    echo "$1" >&2
+  fi
+}
+
+usage() {
+  local joined_subcommands="$(IFS="|" ; echo "${SUBCOMMANDS[*]}")"
+
+  die "usage: $1 <${joined_subcommands}|install-commands> args"
+}
+
+IMDS_HOST_URI="http://169.254.169.254"
+
+# Function to retrieve a new token from IMDSv2
+get_imds_token() {
+  # Determine a user-writable token file path
+  USER_ID=$(id -u)
+  local runtime_data_directory="/run/user/${USER_ID}"
+  local imds_token_file="${runtime_data_directory}/imds_token"
+  # Ensure the token file directory exists
+  mkdir -p "${runtime_data_directory}" && chmod 700 "${runtime_data_directory}" || die "cannot create runtime data directory ${runtime_data_directory}"
+
+  local ttl_seconds=21600  # 6 hours
+  local stale_seconds=$((ttl_seconds - 60))
+
+  if [[ ! -f "$imds_token_file" ]] || [[ $(($(date +%s) - $(stat -c %Y "$imds_token_file"))) -gt $stale_seconds ]]; then
+    say "Fetching a new IMDSv2 token..."
+    IMDS_TOKEN=$(curl -s -X PUT "$IMDS_HOST_URI/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: $ttl_seconds")
+    
+    if [[ -z "$IMDS_TOKEN" ]]; then
+      die  "Error: Failed to retrieve IMDSv2 token."
+    fi
+
+    echo "$IMDS_TOKEN" > "$imds_token_file"
+    chmod 600 "$imds_token_file"
+  else
+    IMDS_TOKEN=$(cat "$imds_token_file")
+  fi
+}
+
+matches_ip_address() {
+  if [[ $1 =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+resolve_hostname() {
+  [ $# -ne 1 ] && die "Usage: $0 <hostname>"
+  local host_output
+  host_output=$(host $1)
+  [ $? -ne 0 ] && return 1
+  local ip_address
+  ip_address=$(echo "$host_output" | awk '/has address/ { print $NF }')
+  if  matches_ip_address $ip_address; then
+    echo $ip_address
+  else
+    return 1
+  fi
+}
+
+eva_usage() {
+  die "usage:  $1 <ebs-volume-id> <mount-point>
+                ebs-volume-id must match vol-*
+                mount point must be under /mnt"
+}
+
+
+# the following functions are exposed as subcommands
+#
+SUBCOMMANDS=("IMDSCurl attach_this_volume_to_me detach_this_volume")
+
+
+IMDSCurl() {
+
+  if [[ -z "$1" ]]; then
+    die "Usage: $0 <metadata-path|full-url>"
+  fi
+
+  get_imds_token
+
+  local url_path="$1"
+  
+  # Allow full URL or path specification only if it matches IMDS_HOST_URI
+  # (prevent using this command to exfiltrate the IMDS_TOKEN to other web servers)
+  if [[ "$url_path" == ${IMDS_HOST_URI}/* ]]; then
+    URL="$url_path"
+  else
+    URL="$IMDS_HOST_URI/$url_path"
+  fi
+
+  # Fetch the metadata
+  curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$URL"
+  fetch_metadata "$1" || die "cannot fetch metadata $1"
+}
+
+
+ensure_volume_attached() {
+  EBS_VOL_ID="$1"
+  LOCAL_MOUNT_POINT="$2"
+
+  # confirm that each matches the proper regex
+  if [[ "$EBS_VOL_ID" =~ ^vol-[0-9a-f]{8,17}$ ]] && [[ "$LOCAL_MOUNT_POINT" =~ ^/mnt/.*$ ]]
+  then
+    mkdir -p "$LOCAL_MOUNT_POINT"
+    [ -d "$LOCAL_MOUNT_POINT" ] || die "Could not mkdir $LOCAL_MOUNT_POINT"
+  else
+    eva_usage $0
+  fi
+
+  MY_INSTANCE_ID=$(/usr/local/bin/IMDSCurl latest/meta-data/instance-id)
+  if ! [[ $MY_INSTANCE_ID =~ ^i-[0-9a-f]+$ ]]; then
+    die "Error: Failed to retrieve instance ID."
+  fi
+  MY_AWS_REGION=$(IMDSCurl latest/dynamic/instance-identity/document | jq -r .region)
+
+  VOLUMES_DATA=$(aws ec2 describe-volumes --region "$MY_AWS_REGION" --filters Name=attachment.instance-id,Values=$MY_INSTANCE_ID)
+
+  echo $VOLUMES_DATA
+
+  ATTACHED_DEVICE=$(echo "$VOLUMES_DATA" | jq -r --arg EBS_VOL_ID "$EBS_VOL_ID" --arg MY_INSTANCE_ID "$MY_INSTANCE_ID" '
+    .Volumes[] 
+    | select(.VolumeId == $EBS_VOL_ID and .Attachments[].InstanceId == $MY_INSTANCE_ID)
+    | .Attachments[].Device
+    ')
+
+  if [ -z "$ATTACHED_DEVICE" ]; then
+    # STEVE: this is where you left off
+     ATTACH_POINT=FIXME
+     aws ec2 attach-volume --volume-id "$EBS_VOL_ID" --instance-id "$MY_INSTANCE_ID" --device "$ATTACH_POINT" || die "Could not attach the volume $EBS_VOL_ID to my instance id"
+
+}
+
+associate_this_elastic_ip_address_with_me() {
+  if [ $# -ne 1 ]; then
+    die "Usage: $0 <host_or_ip_address>"
+  fi
+
+  local host_or_ip_address="${1}"
+
+  if matches_ip_address $host_or_ip_address; then
+    THE_ELASTIC_IP=$host_or_ip_address
+  else
+    THE_ELASTIC_IP=$(resolve_hostname $host_or_ip_address )
+    [ $? -ne 0 ] && die "Cannot resolve hostname $host_or_ip_address"
+  fi
+
+
+  # Fetch the instance ID and region from instance metadata
+  MY_INSTANCE_ID=$(IMDSCurl latest/meta-data/instance-id)
+
+  if ! [[ $MY_INSTANCE_ID =~ ^i-[0-9a-f]+$ ]]; then
+    die "Error: Failed to retrieve instance ID."
+  fi
+
+  MY_REGION=$(IMDSCurl latest/dynamic/instance-identity/document | jq -r .region)
+
+  if ! [[ $MY_REGION =~ ^[a-z]{2}-[a-z]+-[1-9]$ ]]; then
+    die "Error: Failed to retrieve my aws region."
+  fi
+
+  # Attach the Elastic IP to myself
+  aws ec2 associate-address --instance-id $MY_INSTANCE_ID --public-ip $THE_ELASTIC_IP --region $MY_REGION
+}
+
+
+INVOKED_AS=$(basename "$0")
+
+# first check if running in installed command mode
+for subcommand in $SUBCOMMANDS
+do
+  if [ "$INVOKED_AS" = "$subcommand" ]; then
+    $subcommand "$@"
+    exit $?
+  fi
+done
+
+
+# next, check if running with a valid subcommand
+for subcommand in $SUBCOMMANDS
+do
+  if [ "$1" = "$subcommand" ] ; then
+    shift
+    $subcommand $@
+    exit $?
+  fi
+done
+  
+if [ $1 = 'install-commands' ] ; then
+  THIS_SCRIPT_PATH="${BASH_SOURCE[0]}"
+  THIS_SCRIPT_NAME="$(basename "$THIS_SCRIPT_PATH")"
+  THIS_SCRIPT_DIR="$( cd "$( dirname "$THIS_SCRIPT_PATH" )" &> /dev/null && pwd )"
+  INSTALL_DIR="$THIS_SCRIPT_DIR"
+  for subcommand in $SUBCOMMANDS
+  do
+    SYMLINK="$THIS_SCRIPT_PATH/$subcommand" 
+    TARGET="$THIS_SCRIPT_NAME"
+    ln -s "$TARGET" "$SYMLINK" || die "could not symlink $SYMLINK to $TARGET"
+  done
+  exit 0
+fi
+
+usage $0
+
