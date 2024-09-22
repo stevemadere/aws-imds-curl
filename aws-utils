@@ -106,8 +106,7 @@ IMDSCurl() {
   fi
 
   # Fetch the metadata
-  curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$URL"
-  fetch_metadata "$1" || die "cannot fetch metadata $1"
+  curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" "$URL" || die "cannot fetch metadata $1"
 }
 
 
