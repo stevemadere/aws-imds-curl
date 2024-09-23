@@ -41,7 +41,7 @@ get_imds_token() {
   if [[ ! -f "$imds_token_file" ]] || [[ $(($(date +%s) - $(stat -c %Y "$imds_token_file"))) -gt $stale_seconds ]]; then
     say "Fetching a new IMDSv2 token..."
     IMDS_TOKEN=$(curl -s -X PUT "$IMDS_HOST_URI/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: $ttl_seconds")
-    
+
     if [[ -z "$IMDS_TOKEN" ]]; then
       die  "Error: Failed to retrieve IMDSv2 token."
     fi
@@ -81,6 +81,53 @@ eva_usage() {
                 mount point must be under /mnt"
 }
 
+get_my_instance_id() {
+  # Fetch the instance ID and region from instance metadata
+  MY_INSTANCE_ID=$(IMDSCurl latest/meta-data/instance-id)
+  if ! [[ $MY_INSTANCE_ID =~ ^i-[0-9a-f]+$ ]]; then
+    die "Error: Failed to retrieve instance ID."
+  fi
+}
+
+get_my_region() {
+  MY_AWS_REGION=$(IMDSCurl latest/dynamic/instance-identity/document | jq -r .region)
+
+  if ! [[ $MY_AWS_REGION =~ ^[a-z]{2}-[a-z]+-[1-9]$ ]]; then
+    die "Error: Failed to retrieve my aws region."
+  fi
+}
+
+next_available_disk_device() {
+  [ -n "$MY_INSTANCE_ID" ] || get_my_instance_id
+  [ -n "$MY_AWS_REGION" ] || get_my_region
+
+  # Check currently attached devices
+  local attached_volumes=$(aws ec2 describe-instances --instance-ids "$MY_INSTANCE_ID" \
+    --region "$MY_AWS_REGION" --query 'Reservations[].Instances[].BlockDeviceMappings[].DeviceName' \
+    --output text)
+
+  # Define a list of potential device names
+  local possible_device_names="/dev/sdf /dev/sdg /dev/sdh /dev/sdi /dev/sdj /dev/sdk /dev/sdl"
+
+  # Find the first available device_name
+  local device_name
+  for device_name in $possible_device_names; do
+    # check if the device_name is an existing partition or a symlink pointing to an existing
+    # disk partition
+    if grep -Fq "$(basename "$device_name")" /proc/partitions ||  \
+          ([ -L "$device_name" ] && grep -Fq "$(readlink "$device_name")" /proc/partitions)
+    then
+      say "$device_name is attached to a partition"
+    else
+      if ! echo "$attached_volumes" | grep -Fq "$device_name"; then
+        echo -n "$device_name"
+        return 0
+      fi
+    fi
+  done
+
+  die "No available disk device found."
+}
 
 # the following functions are exposed as subcommands
 #
@@ -96,7 +143,7 @@ IMDSCurl() {
   get_imds_token
 
   local url_path="$1"
-  
+
   # Allow full URL or path specification only if it matches IMDS_HOST_URI
   # (prevent using this command to exfiltrate the IMDS_TOKEN to other web servers)
   if [[ "$url_path" == ${IMDS_HOST_URI}/* ]]; then
@@ -111,41 +158,46 @@ IMDSCurl() {
 
 
 ensure_volume_attached() {
-  EBS_VOL_ID="$1"
-  LOCAL_MOUNT_POINT="$2"
+  local ebs_vol_id="$1"
+  local local_mount_point="$2"
 
   # confirm that each matches the proper regex
-  if [[ "$EBS_VOL_ID" =~ ^vol-[0-9a-f]{8,17}$ ]] && [[ "$LOCAL_MOUNT_POINT" =~ ^/mnt/.*$ ]]
+  if [[ "$ebs_vol_id" =~ ^vol-[0-9a-f]{8,17}$ ]] && [[ "$local_mount_point" =~ ^/.+$ ]]
   then
-    mkdir -p "$LOCAL_MOUNT_POINT"
-    [ -d "$LOCAL_MOUNT_POINT" ] || die "Could not mkdir $LOCAL_MOUNT_POINT"
+    mkdir -p "$local_mount_point"
+    [ -d "$local_mount_point" ] || die "Could not mkdir $local_mount_point"
   else
     eva_usage $0
   fi
 
-  MY_INSTANCE_ID=$(/usr/local/bin/IMDSCurl latest/meta-data/instance-id)
-  if ! [[ $MY_INSTANCE_ID =~ ^i-[0-9a-f]+$ ]]; then
-    die "Error: Failed to retrieve instance ID."
+  get_my_instance_id
+  get_my_region
+
+  local attached_volumes_data="$(aws ec2 describe-volumes --region "$MY_AWS_REGION" \
+            --filters "Name=attachment.instance-id,Values=$MY_INSTANCE_ID" --output json)"
+  [ "$?" = "0" ] || die "could not describe-volumes"
+
+  local attached_device=$(echo "$attached_volumes_data" | \
+                              jq -r --arg ebs_vol_id "$ebs_vol_id" \
+                            --arg THE_INSTANCE_ID "$MY_INSTANCE_ID" '
+            .Volumes[]
+            | select(.VolumeId == $ebs_vol_id and .Attachments[].InstanceId == $THE_INSTANCE_ID)
+            | .Attachments[].Device
+        ')
+
+  local attach_point="$(next_available_disk_device)"
+
+  if [ -n "$attached_device" ]; then
+    echo -n "$attached_device"
+    return 0
   fi
-  MY_AWS_REGION=$(IMDSCurl latest/dynamic/instance-identity/document | jq -r .region)
 
-  VOLUMES_DATA=$(aws ec2 describe-volumes --region "$MY_AWS_REGION" --filters Name=attachment.instance-id,Values=$MY_INSTANCE_ID)
+  [ -n "$attach_point" ] || die "no available attach point found"
+  aws ec2 attach-volume --volume-id "$ebs_vol_id" --instance-id "$MY_INSTANCE_ID" \
+        --device "$attach_point" || die "Could not attach the volume $ebs_vol_id to my instance id"
 
-  echo $VOLUMES_DATA
-
-  ATTACHED_DEVICE=$(echo "$VOLUMES_DATA" | jq -r --arg EBS_VOL_ID "$EBS_VOL_ID" --arg MY_INSTANCE_ID "$MY_INSTANCE_ID" '
-    .Volumes[] 
-    | select(.VolumeId == $EBS_VOL_ID and .Attachments[].InstanceId == $MY_INSTANCE_ID)
-    | .Attachments[].Device
-    ')
-
-  if [ -z "$ATTACHED_DEVICE" ]; then
-    # STEVE: this is where you left off
-    die "unimplemented functionality"
-     ATTACH_POINT=FIXME
-     aws ec2 attach-volume --volume-id "$EBS_VOL_ID" --instance-id "$MY_INSTANCE_ID" --device "$ATTACH_POINT" || die "Could not attach the volume $EBS_VOL_ID to my instance id"
-
-  fi
+  # TODO:  find the device id of the filesystem paritition and mount it on $local_mount_point
+  die "mount unimplemented as of yet"
 }
 
 associate_this_elastic_ip_address_with_me() {
@@ -163,21 +215,13 @@ associate_this_elastic_ip_address_with_me() {
   fi
 
 
-  # Fetch the instance ID and region from instance metadata
-  MY_INSTANCE_ID=$(IMDSCurl latest/meta-data/instance-id)
+  get_my_instance_id
+  get_my_region
 
-  if ! [[ $MY_INSTANCE_ID =~ ^i-[0-9a-f]+$ ]]; then
-    die "Error: Failed to retrieve instance ID."
-  fi
-
-  MY_REGION=$(IMDSCurl latest/dynamic/instance-identity/document | jq -r .region)
-
-  if ! [[ $MY_REGION =~ ^[a-z]{2}-[a-z]+-[1-9]$ ]]; then
-    die "Error: Failed to retrieve my aws region."
-  fi
 
   # Attach the Elastic IP to myself
-  aws ec2 associate-address --instance-id $MY_INSTANCE_ID --public-ip $THE_ELASTIC_IP --region $MY_REGION
+  aws ec2 associate-address --instance-id $MY_INSTANCE_ID --public-ip $THE_ELASTIC_IP \
+                            --region $MY_AWS_REGION
 }
 
 
@@ -202,7 +246,7 @@ do
     exit $?
   fi
 done
-  
+
 if [ $1 = 'install-commands' ] ; then
   THIS_SCRIPT_PATH="${BASH_SOURCE[0]}"
   THIS_SCRIPT_NAME="$(basename "$THIS_SCRIPT_PATH")"
@@ -210,7 +254,7 @@ if [ $1 = 'install-commands' ] ; then
   INSTALL_DIR="$THIS_SCRIPT_DIR"
   for subcommand in $SUBCOMMANDS
   do
-    SYMLINK="$THIS_SCRIPT_DIR/$subcommand" 
+    SYMLINK="$THIS_SCRIPT_DIR/$subcommand"
     TARGET="$THIS_SCRIPT_NAME"
     ln -s "$TARGET" "$SYMLINK" || die "could not symlink $SYMLINK to $TARGET"
   done
