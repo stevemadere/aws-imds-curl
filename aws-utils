@@ -3,6 +3,7 @@
 # They can be called via $(aws-utils subcommand args) or you can call $(aws-utils install-commands)
 # and from then on, any of them can be called without the aws-utils prefix.
 # export the a non-empty variable VERBOSE to get diagnostic logging
+[ -n "$VERBOSE" ] && echo verbose && set -x
 
 # Internal functions
 die() {
@@ -129,6 +130,35 @@ next_available_disk_device() {
   die "No available disk device found."
 }
 
+
+ensure_device_mounted() {
+  local device="$1"
+  local mount_point="$2"
+
+  [ -d "$mount_point" ] || die "mount point must be a directory"
+  [ -b "$device" ]  || die "device is not a valid filesystem device"
+
+  local resolved_device=$(readlink -f "$device")
+  local existing_mount_point
+  existing_mount_point_mount=$(findmnt -rno SOURCE,TARGET "$mount_point")
+  if [ $? = "0" ] ; then
+    if echo $existing_mount_point_mount | grep -q "^${resolved_device} "; then
+      say "$device was already mounted on $mount_point.  We good."
+      return 0
+    else
+      die "Cannot mount $device on $mount_point because of existing mount $existing_mount_point_mount"
+    fi
+  fi
+
+  local already_mounted_on
+  already_mounted_on=$(findmnt -rno TARGET "$device")
+  if [ $? = "0" ] ; then
+      die "Cannot mount $device on $mount_point because of existing mount $device $already_mounted_on"
+  fi
+
+  mount  "$device" "$mount_point" || die "failed to mount $attached_device on $local_mount_point"
+}
+
 # the following functions are exposed as subcommands
 #
 SUBCOMMANDS=("IMDSCurl associate_this_elastic_ip_address_with_me ensure_volume_attached")
@@ -161,7 +191,7 @@ ensure_volume_attached() {
   local ebs_vol_id="$1"
   local local_mount_point="$2"
 
-  # confirm that each matches the proper regex
+  # validate arguments and create mount point dir if it does not already exist
   if [[ "$ebs_vol_id" =~ ^vol-[0-9a-f]{8,17}$ ]] && [[ "$local_mount_point" =~ ^/.+$ ]]
   then
     mkdir -p "$local_mount_point"
@@ -185,19 +215,24 @@ ensure_volume_attached() {
             | .Attachments[].Device
         ')
 
-  local attach_point="$(next_available_disk_device)"
-
-  if [ -n "$attached_device" ]; then
-    echo -n "$attached_device"
-    return 0
+  if [ -z "$attached_device" ]; then
+    local attach_point="$(next_available_disk_device)"
+    [ -n "$attach_point" ] || die "no available attach point found"
+    aws ec2 attach-volume --region "$MY_AWS_REGION" --volume-id "$ebs_vol_id" \
+                          --instance-id "$MY_INSTANCE_ID" --device "$attach_point" ||  \
+                            die "Could not attach the volume $ebs_vol_id to my instance id"
+    attached_device="$attach_point"
   fi
 
-  [ -n "$attach_point" ] || die "no available attach point found"
-  aws ec2 attach-volume --volume-id "$ebs_vol_id" --instance-id "$MY_INSTANCE_ID" \
-        --device "$attach_point" || die "Could not attach the volume $ebs_vol_id to my instance id"
+  # wait for the volume to be attached
+  while true ; do
+    partition_name="$(basename $(readlink -f "$attached_device"))"
+    [ -e "$attached_device" ] && grep -q "${partition_name}$" /proc/partitions && break
+    echo "waiting for $attached_device to show up in /proc/partitions as $partition_name" >&2
+    sleep 3
+  done
 
-  # TODO:  find the device id of the filesystem paritition and mount it on $local_mount_point
-  die "mount unimplemented as of yet"
+  ensure_device_mounted "$attached_device" "$local_mount_point"
 }
 
 associate_this_elastic_ip_address_with_me() {
